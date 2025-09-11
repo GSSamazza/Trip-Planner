@@ -39,7 +39,11 @@ body{
 }
 .controls.collapsed .field{ display:none; }
 .controls.collapsed { grid-template-columns: 1fr; }
-.controls .collapse-hint{ color:var(--muted); opacity:.9; margin-left:6px }
+.controls .collapse-hint{ color:var(--muted); 
+  opacity:.9; 
+  margin-left:6px;
+  text-align: center;
+ }
 
 .field{
   display:flex;
