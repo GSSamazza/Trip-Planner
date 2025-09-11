@@ -2,6 +2,18 @@
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls) => { const n = document.createElement(tag); if (cls) n.className = cls; return n; };
 
+/** Gera URL de mapa estável por plataforma.
+ *  - iOS: Apple Maps (abre fora do PWA com mais confiabilidade)
+ *  - Outras plataformas: Google Maps web
+ */
+function mapsUrl(query){
+  const q = encodeURIComponent(query);
+  const ua = navigator.userAgent;
+  const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  if (isIOS) return `https://maps.apple.com/?q=${q}`;
+  return `https://www.google.com/maps/search/?api=1&query=${q}`;
+}
+
 const currencies = ["BRL","USD","EUR","CLP","ARS","GBP","JPY","CAD","AUD","CHF","CNY","MXN","COP","PEN"];
 
 function fillCurrencySelects(){
@@ -81,7 +93,7 @@ function renderTrips(){
     const summary = el("div","trip-sub");
     summary.textContent = ` ${t.settings.tripCurrency} ${stats.spent.toFixed(2)} • restante ${t.settings.tripCurrency} ${Math.max(0, (t.settings.budget||0) - stats.spent).toFixed(2)}`;
 
-    // actions: resumo + excluir
+    // Ações no header: resumo + excluir
     const actions = el("div","trip-actions");
     actions.appendChild(summary);
     const delBtn = el("button","action-btn red");
@@ -209,10 +221,13 @@ function renderCalendar(trip){
 
         const right = el("div"); right.style.display = "flex"; right.style.gap = "8px"; right.style.alignItems = "center";
 
+        // === MAPS (estável no iOS) ===
         const maps = document.createElement("a");
-        maps.href = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(act.activity)}`;
-        maps.target = "_blank"; maps.rel = "noopener noreferrer";
-        maps.className = "action-btn blue"; maps.textContent = "Maps";
+        maps.href = mapsUrl(act.activity);
+        maps.target = "_blank";
+        maps.rel = "noopener noreferrer external";
+        maps.className = "action-btn blue";
+        maps.textContent = "Maps";
 
         const del = el("button","action-btn red"); del.textContent = "Excluir";
         del.addEventListener("click", () => {
@@ -291,10 +306,13 @@ function renderModalList(){
 
     const right = el("div"); right.style.display = "flex"; right.style.gap = "8px"; right.style.alignItems = "center";
 
+    // === MAPS (estável no iOS) ===
     const maps = document.createElement("a");
-    maps.href = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(act.activity)}`;
-    maps.target = "_blank"; maps.rel = "noopener noreferrer";
-    maps.className = "action-btn blue"; maps.textContent = "Maps";
+    maps.href = mapsUrl(act.activity);
+    maps.target = "_blank";
+    maps.rel = "noopener noreferrer external";
+    maps.className = "action-btn blue";
+    maps.textContent = "Maps";
 
     const del = el("button","action-btn red"); del.textContent = "Excluir";
     del.addEventListener("click", () => {

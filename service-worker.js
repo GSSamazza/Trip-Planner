@@ -1,10 +1,11 @@
-const CACHE = "tripplanner-v1";
+const CACHE = "tripplanner-v3"; // <<-- bump de versão
 const ASSETS = [
   "./",
   "./index.html",
   "./index.css",
   "./index.js",
   "./manifest.webmanifest",
+  "./icons/icon-180.png",
   "./icons/icon-192.png",
   "./icons/icon-512.png"
 ];
@@ -24,14 +25,22 @@ self.addEventListener("activate", (e) => {
 });
 
 self.addEventListener("fetch", (e) => {
-  const req = e.request;
+  const url = new URL(e.request.url);
+
+  // 1) NÃO intercepta requisições para outros domínios (maps, cdns, etc.)
+  if (url.origin !== self.location.origin) return;
+
+  // 2) Só cacheia GETs do nosso domínio
+  if (e.request.method !== "GET") return;
+
   e.respondWith(
-    caches.match(req).then(cached =>
+    caches.match(e.request).then(cached =>
       cached ||
-      fetch(req).then(res => {
-        if (req.method === "GET" && res.status === 200) {
+      fetch(e.request).then(res => {
+        // Cacheia respostas OK
+        if (res.status === 200) {
           const clone = res.clone();
-          caches.open(CACHE).then(c => c.put(req, clone));
+          caches.open(CACHE).then(c => c.put(e.request, clone));
         }
         return res;
       }).catch(() => caches.match("./index.html"))
