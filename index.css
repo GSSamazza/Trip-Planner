@@ -274,3 +274,20 @@ body{
   .controls{ grid-template-columns: 1fr; }
   .controls:not(.collapsed) .btn-primary{ grid-column: 1 / -1; }
 }
+
+/* iOS: evita zoom ao focar em inputs mantendo font-size >= 16px */
+@media (max-width: 768px){
+  input, select, textarea {
+    font-size: 16px;        /* ponto-chave para iOS não dar zoom */
+  }
+  /* garantir nos campos que já estilizamos */
+  .field input, .field select, .modal-fields input {
+    font-size: 16px;
+  }
+}
+
+/* Opcional: suaviza comportamento de zoom/ajuste automático do Safari */
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
