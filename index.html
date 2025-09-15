@@ -1,63 +1,78 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
-
-  <head>
-    <link rel="manifest" href="manifest.webmanifest">
-    <link rel="apple-touch-icon" href="icons/icon-180.png">
-    <meta name="theme-color" content="#00ff96">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TripPlanner</title>
-    <link rel="stylesheet" href="index.css">
-    <script type="text/javascript" src="./index.js" defer=""></script>
-    <link rel="stylesheet" href="./index.css">
-  </head>
-
-  <body>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>TripPlanner</title>
+  <link rel="stylesheet" href="index.css" />
+</head>
+<body>
+  <main class="container">
     <header class="app-header">
       <h1>✈️ TripPlanner</h1>
       <p class="subtitle">Monte roteiros por destino, controle gastos e marque o que já foi feito.</p>
     </header>
 
-    <section class="controls collapsed" data-collapsible="">
+    <!-- CONTROLES -->
+    <section class="controls collapsed" data-collapsible>
       <div class="field">
         <label for="tripName">Nome do calendário (destino)</label>
-        <input type="text" id="tripName" placeholder="Ex.: Calendário Santiago">
+        <input type="text" id="tripName" placeholder="Ex.: Calendário Santiago" />
       </div>
 
       <div class="field">
         <label for="startDate">Data início</label>
-        <input type="date" id="startDate">
+        <input type="date" id="startDate" />
       </div>
 
       <div class="field">
         <label for="endDate">Data fim</label>
-        <input type="date" id="endDate">
+        <input type="date" id="endDate" />
       </div>
 
       <div class="field">
         <label for="budget">Orçamento (moeda da viagem)</label>
-        <input type="number" id="budget" min="0" step="0.01" placeholder="Ex: 1500.00">
+        <input type="number" id="budget" min="0" step="0.01" placeholder="Ex: 1500.00" inputmode="decimal" />
       </div>
 
-      <div class="field">
-        <label for="tripCurrency">Moeda da viagem</label>
-        <select id="tripCurrency"></select>
-      </div>
-
-      <div class="field">
-        <label for="userCurrency">Sua moeda</label>
-        <select id="userCurrency"></select>
-      </div>
-
-      <!-- Campo de câmbio centralizado -->
+      <!-- ==== CARD DE CÂMBIO (estilo Google) ==== -->
       <div class="field field-exchange">
-        <label for="exchangeRateInput">Câmbio (1 viagem = ? da sua)</label>
-        <input type="number" id="exchangeRateInput" min="0" step="0.0001" value="1">
-        <small class="hint">Ex: viagem=USD, você=BRL → insira cotação do USD em BRL.</small>
+        <div class="fx-card">
+          <h3 id="fxHeadline" class="fx-headline">—</h3>
+
+          <div class="fx-inputs">
+            <div class="fx-input">
+              <input type="number" id="fxFromValue" value="1" min="0" step="0.01" inputmode="decimal" />
+              <select id="fxFromSelect"></select>
+            </div>
+
+            <button id="fxSwap" class="swap-btn swap-large" title="Trocar moedas">⇄</button>
+
+            <div class="fx-input">
+              <input type="number" id="fxToValue" value="0" min="0" step="0.01" inputmode="decimal" />
+              <select id="fxToSelect"></select>
+            </div>
+          </div>
+
+          <div class="fx-toolbar">
+            <div class="chart-toolbar">
+              <button class="chart-btn" data-span="5D">5D</button>
+              <button class="chart-btn active" data-span="1M">1M</button>
+              <button class="chart-btn" data-span="1A">1A</button>
+            </div>
+            <button type="button" id="updateRate" class="btn-secondary">↻ Atualizar câmbio</button>
+          </div>
+
+          <div class="chart-wrap">
+            <!-- width 100% via CSS; altura também definida no CSS -->
+            <canvas id="rateChart"></canvas>
+          </div>
+
+          <small id="rateInfo" class="hint center">Fonte: ECB/Frankfurter (dados diários).</small>
+        </div>
+
+        <!-- campo escondido que o resto do app usa -->
+        <input type="hidden" id="exchangeRateInput" value="1">
       </div>
 
       <button type="button" id="generate" class="btn-primary">Gerar calendário</button>
@@ -65,36 +80,42 @@
     </section>
 
     <div id="trips" class="trips"></div>
+  </main>
 
-    <!-- Modal -->
-    <div id="modal" class="modal" aria-hidden="true">
-      <div class="modal-backdrop" data-close=""></div>
-      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalDayTitle">
-        <button class="modal-close" title="Fechar" data-close="">×</button>
-        <h3 id="modalDayTitle">Adicionar atividade</h3>
+  <!-- Modal Atividades -->
+  <div id="modal" class="modal" aria-hidden="true">
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalDayTitle">
+      <button class="modal-close" title="Fechar" data-close>&times;</button>
+      <h3 id="modalDayTitle">Adicionar atividade</h3>
 
-        <div class="modal-fields">
-          <input type="text" id="modalActivityInput" placeholder="Atividade / local...">
-          <input type="number" id="modalCostInput" placeholder="Custo (opcional)" min="0" step="0.01">
-          <button type="button" id="modalAddBtn" class="btn-primary">Adicionar</button>
-        </div>
+      <div class="modal-fields">
+        <input type="text" id="modalActivityInput" placeholder="Atividade / local..." />
+        <input type="number" id="modalCostInput" placeholder="Custo (opcional)" min="0" step="0.01" inputmode="decimal"/>
+        <button type="button" id="modalAddBtn" class="btn-primary">Adicionar</button>
+      </div>
 
-        <div id="modalList" class="list"></div>
+      <div id="modalList" class="list"></div>
+    </div>
+  </div>
+
+  <!-- Modal Mapa -->
+  <div id="mapModal" class="modal" aria-hidden="true">
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-card map-card" role="dialog" aria-modal="true" aria-labelledby="mapTitle">
+      <button class="modal-close" title="Fechar" data-close>&times;</button>
+      <h3 id="mapTitle">Mapa</h3>
+      <div class="map-frame">
+        <iframe id="mapFrame" loading="lazy" referrerpolicy="no-referrer-when-downgrade" allowfullscreen></iframe>
+      </div>
+      <div class="map-actions">
+        <a id="openMapsExternal" class="action-btn blue" href="#" target="_blank" rel="noopener noreferrer external">Abrir no Maps</a>
       </div>
     </div>
+  </div>
 
-<script>
-  if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./service-worker.js');
-    });
-  }
-</script>
+  <script src="index.js" defer></script>
+</body>
 
-
-    <script src="index.js"></script>
-
-
-  </body>
 
 </html>

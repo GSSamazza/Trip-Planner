@@ -1,28 +1,67 @@
-// ==== Helpers ====
+// ===== Helpers básicos =======================================================
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls) => { const n = document.createElement(tag); if (cls) n.className = cls; return n; };
 
-/** Gera URL de mapa estável por plataforma.
- *  - iOS: Apple Maps (abre fora do PWA com mais confiabilidade)
- *  - Outras plataformas: Google Maps web
- */
-function mapsUrl(query){
-  const q = encodeURIComponent(query);
-  const ua = navigator.userAgent;
-  const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-  if (isIOS) return `https://maps.apple.com/?q=${q}`;
-  return `https://www.google.com/maps/search/?api=1&query=${q}`;
-}
-
 const currencies = ["BRL","USD","EUR","CLP","ARS","GBP","JPY","CAD","AUD","CHF","CNY","MXN","COP","PEN"];
+
+// nomes PT para as mais usadas (as demais virão da API de símbolos)
+const NAMES_PT = {
+  BRL: "Real brasileiro", USD: "Dólar americano", EUR: "Euro",
+  CLP: "Peso chileno", ARS: "Peso argentino", GBP: "Libra esterlina",
+  JPY: "Iene japonês", CAD: "Dólar canadense", AUD: "Dólar australiano",
+  CHF: "Franco suíço", CNY: "Yuan chinês", MXN: "Peso mexicano",
+  COP: "Peso colombiano", PEN: "Sol peruano"
+};
+let SYMBOL_NAMES = { ...NAMES_PT }; // vai ser enriquecido pela API de símbolos
 
 function fillCurrencySelects(){
   const trip = $("#tripCurrency");
   const user = $("#userCurrency");
-  trip.innerHTML = currencies.map(c=>`<option>${c}</option>`).join("");
-  user.innerHTML = currencies.map(c=>`<option>${c}</option>`).join("");
-  trip.value = "USD";
-  user.value = "BRL";
+  if (trip) trip.innerHTML = currencies.map(c=>`<option>${c}</option>`).join("");
+  if (user) user.innerHTML = currencies.map(c=>`<option>${c}</option>`).join("");
+  if (trip) trip.value = "USD";
+  if (user) user.value = "BRL";
+}
+
+// ===== Card de câmbio (selects) ==============================================
+
+function fxLabel(code){ return SYMBOL_NAMES[code] ? `${code} — ${SYMBOL_NAMES[code]}` : code; }
+
+function fillFxSelectsFromCodes(codes){
+  const from = $("#fxFromSelect");
+  const to   = $("#fxToSelect");
+  if (!from || !to) return;
+  const opts = codes.map(c=>`<option value="${c}">${fxLabel(c)}</option>`).join("");
+  from.innerHTML = opts;
+  to.innerHTML   = opts;
+  if (!from.value) from.value = "USD";
+  if (!to.value)   to.value   = "BRL";
+}
+
+async function tryEnrichSymbols(){
+  // mostra algo imediatamente (fallback)
+  fillFxSelectsFromCodes(currencies);
+
+  try{
+    const r = await fetch("https://api.exchangerate.host/symbols", {mode:"cors"});
+    if(!r.ok) throw 0;
+    const j = await r.json();
+    if (j && j.symbols){
+      Object.entries(j.symbols).forEach(([code, obj])=>{
+        if (!SYMBOL_NAMES[code]) SYMBOL_NAMES[code] = obj.description || code;
+      });
+      const allCodes = Object.keys(j.symbols).sort();
+      fillFxSelectsFromCodes(allCodes);
+    }
+  }catch{ /* mantém fallback */ }
+}
+
+// Helper para pegar select com default
+function getSelVal(id, fallback){
+  const el = document.getElementById(id);
+  if (!el) return fallback;
+  if (!el.value) el.value = fallback;
+  return el.value;
 }
 
 function parseDateInput(value){
@@ -42,12 +81,13 @@ function inclusiveDays(start, end){
   return days;
 }
 function uid(){ return Math.random().toString(36).slice(2,9); }
+const mapsUrl = (q)=>`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
 
-// ==== State ====
+// ===== Estado =================================================================
 const STORAGE_KEY = "tripplanner:v2";
 let memoryState = { trips:{}, order:[] };
-let activeTripId = null; // para modal
-let activeDayKey = null;  // para modal
+let activeTripId = null; // modal
+let activeDayKey = null; // modal
 
 function loadState(){
   try{
@@ -65,7 +105,106 @@ function saveState(state){
   catch(e){ console.warn("[TripPlanner] Falha ao salvar no localStorage; persistindo em memória.", e); }
 }
 
-// ==== Trips UI ====
+// ====== COTAÇÃO: provedores + cache (estável + desempenho) ===================
+
+const FRANKFURTER_CODES = new Set([
+  "EUR","USD","GBP","JPY","AUD","BGN","BRL","CAD","CHF","CNY","CZK","DKK","HKD",
+  "HUF","IDR","ILS","INR","ISK","KRW","MXN","MYR","NOK","NZD","PHP","PLN","RON",
+  "SEK","SGD","THB","TRY","ZAR"
+]);
+
+const ratesCache = new Map();     // key: `${from}|${to}` -> {v, t}
+const historyCache = new Map();   // key: `${span}|${from}|${to}` -> {arr, t}
+const RATE_TTL_MS = 5 * 60 * 1000;   // 5 minutos
+const HIST_TTL_MS = 60 * 60 * 1000;   // 1 hora
+
+function getCache(map, key, ttlMs){
+  const hit = map.get(key);
+  if (hit && (Date.now() - hit.t) < ttlMs) return hit.v;
+  return null;
+}
+function setCache(map, key, v){ map.set(key, {v, t: Date.now()}); }
+
+async function provider_exchangerate_host(from,to){
+  const r=await fetch(`https://api.exchangerate.host/convert?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&amount=1`,{mode:"cors"});
+  if(!r.ok) throw 0; const j=await r.json(); if(typeof j.result!=="number") throw 0; return j.result;
+}
+async function provider_frankfurter(from,to){
+  const r=await fetch(`https://api.frankfurter.app/latest?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,{mode:"cors"});
+  if(!r.ok) throw 0; const j=await r.json(); const v=j?.rates?.[to]; if(typeof v!=="number") throw 0; return v;
+}
+async function provider_erapi(from,to){
+  const r=await fetch(`https://open.er-api.com/v6/latest/${encodeURIComponent(from)}`,{mode:"cors"});
+  if(!r.ok) throw 0; const j=await r.json(); const v=j?.rates?.[to]; if(typeof v!=="number") throw 0; return v;
+}
+
+async function fetchRate(from,to){
+  from = (from||"").toUpperCase();
+  to   = (to||"").toUpperCase();
+  if (from === to) return 1;
+
+  const key = `${from}|${to}`;
+  const cached = getCache(ratesCache, key, RATE_TTL_MS);
+  if (cached != null) return cached;
+
+  const frankOk = FRANKFURTER_CODES.has(from) && FRANKFURTER_CODES.has(to);
+  const providers = frankOk
+    ? [provider_frankfurter, provider_exchangerate_host, provider_erapi]
+    : [provider_exchangerate_host, provider_erapi, provider_frankfurter];
+
+  for (const p of providers){
+    try {
+      const v = await p(from,to);
+      setCache(ratesCache, key, v);
+      return v;
+    } catch {}
+  }
+  throw new Error("Nenhum provedor retornou a cotação");
+}
+
+// Histórico (para o gráfico)
+function dateToISO(d){ return d.toISOString().slice(0,10); }
+function daysAgo(n){ const d=new Date(); d.setUTCDate(d.getUTCDate()-n); return d; }
+
+async function fetchHistory_frankfurter(from,to,span){
+  const end=new Date();
+  const start= span==="5D" ? daysAgo(7) : span==="1A" ? daysAgo(365) : daysAgo(31);
+  const r=await fetch(`https://api.frankfurter.app/${dateToISO(start)}..${dateToISO(end)}?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,{mode:"cors"});
+  if(!r.ok) throw 0;
+  const j=await r.json();
+  const s=Object.keys(j.rates||{}).sort().map(d=>({date:d,value:+j.rates[d][to]})).filter(x=>!isNaN(x.value));
+  if(!s.length) throw 0;
+  return s;
+}
+async function fetchHistory_exhost(from,to,span){
+  const end=new Date();
+  const start= span==="5D" ? daysAgo(7) : span==="1A" ? daysAgo(365) : daysAgo(31);
+  const url=`https://api.exchangerate.host/timeseries?start_date=${dateToISO(start)}&end_date=${dateToISO(end)}&base=${encodeURIComponent(from)}&symbols=${encodeURIComponent(to)}`;
+  const r=await fetch(url,{mode:"cors"});
+  if(!r.ok) throw 0;
+  const j=await r.json();
+  const s=Object.keys(j.rates||{}).sort().map(d=>({date:d,value:+j.rates[d][to]})).filter(x=>!isNaN(x.value));
+  if(!s.length) throw 0;
+  return s;
+}
+async function fetchHistory(from,to,span){
+  from = (from||"").toUpperCase(); to=(to||"").toUpperCase();
+  const key = `${span}|${from}|${to}`;
+  const cached = getCache(historyCache, key, HIST_TTL_MS);
+  if (cached) return cached;
+
+  const frankOk = FRANKFURTER_CODES.has(from) && FRANKFURTER_CODES.has(to);
+  let arr;
+  try{
+    arr = frankOk ? await fetchHistory_frankfurter(from,to,span) : await fetchHistory_exhost(from,to,span);
+  }catch{
+    arr = frankOk ? await fetchHistory_exhost(from,to,span) : await fetchHistory_frankfurter(from,to,span);
+  }
+  setCache(historyCache, key, arr);
+  return arr;
+}
+
+// ===== Render de TRIPs ========================================================
 function renderTrips(){
   const state = loadState();
   const container = $("#trips");
@@ -89,31 +228,27 @@ function renderTrips(){
     const sub = el("span","trip-sub"); sub.textContent = ` ${t.settings.start} → ${t.settings.end}`;
     left.appendChild(chev); left.appendChild(title); left.appendChild(sub);
 
-    const stats = calcStatsForTrip(t);
     const summary = el("div","trip-sub");
+    const stats = calcStatsForTrip(t);
     summary.textContent = ` ${t.settings.tripCurrency} ${stats.spent.toFixed(2)} • restante ${t.settings.tripCurrency} ${Math.max(0, (t.settings.budget||0) - stats.spent).toFixed(2)}`;
 
-    // Ações no header: resumo + excluir
-    const actions = el("div","trip-actions");
-    actions.appendChild(summary);
-    const delBtn = el("button","action-btn red");
-    delBtn.textContent = "Excluir calendário";
-    delBtn.addEventListener("click", (ev) => {
-      ev.stopPropagation(); // não colapsar ao excluir
-      if (!confirm(`Excluir o calendário "${t.name}"? Esta ação não pode ser desfeita.`)) return;
-      const S = loadState();
-      const idx = S.order.indexOf(t.id);
-      if (idx > -1) S.order.splice(idx,1);
-      delete S.trips[t.id];
-      saveState(S);
-      renderTrips();
+    // Apenas EXCLUIR
+    const btnDel = el("button","action-btn red");
+    btnDel.textContent = "Excluir";
+    btnDel.addEventListener("click",(ev)=>{
+      ev.stopPropagation();
+      if(!confirm(`Excluir o calendário "${t.name}"?`)) return;
+      const s = loadState(); const i = s.order.indexOf(t.id);
+      if (i>-1) s.order.splice(i,1); delete s.trips[t.id]; saveState(s); renderTrips();
     });
 
-    actions.appendChild(delBtn);
+    const actionsWrap = el("div");
+    actionsWrap.style.display="flex"; actionsWrap.style.gap="8px"; actionsWrap.style.alignItems="center";
+    actionsWrap.appendChild(summary);
+    actionsWrap.appendChild(btnDel);
 
     header.appendChild(left);
-    header.appendChild(actions);
-
+    header.appendChild(actionsWrap);
     header.addEventListener("click", () => {
       t.collapsed = !t.collapsed;
       saveState(state);
@@ -188,6 +323,10 @@ function renderCalendar(trip){
     const card = el("section","day-card");
     const header = el("div","day-header");
     const title = el("div","day-title"); title.textContent = formatDateHuman(dt);
+    title.style.cursor="pointer";
+    title.title = "Clique para ver/editar as atividades do dia";
+    title.addEventListener("click", () => openModalForDay(trip.id, key, formatDateHuman(dt)));
+
     const actions = el("div","day-actions");
     const addBtn = el("button","icon-btn"); addBtn.textContent = "➕ Adicionar";
     addBtn.addEventListener("click", () => openModalForDay(trip.id, key, formatDateHuman(dt)));
@@ -202,47 +341,13 @@ function renderCalendar(trip){
       empty.textContent = "Nada planejado ainda. Clique em “Adicionar” para incluir atividades.";
       listEl.appendChild(empty);
     }else{
-      list.forEach((act, i) => {
+      // VISÃO COMPACTA: somente o nome da atividade (sem checkbox/custo/botões)
+      list.forEach((act) => {
         const row = el("div","activity");
-
-        const check = document.createElement("input");
-        check.type = "checkbox";
-        check.checked = !!act.done;
-        check.addEventListener("change", () => {
-          act.done = check.checked;
-          const s = loadState();
-          s.trips[trip.id].days[key][i] = act;
-          saveState(s);
-          renderTrips();
-        });
-
-        const text = el("div","activity-text"); text.textContent = act.activity;
-        const cost = el("div","activity-cost"); cost.textContent = `${trip.settings.tripCurrency} ${Number(act.cost||0).toFixed(2)}`;
-
-        const right = el("div"); right.style.display = "flex"; right.style.gap = "8px"; right.style.alignItems = "center";
-
-        // === MAPS (estável no iOS) ===
-        const maps = document.createElement("a");
-        maps.href = mapsUrl(act.activity);
-        maps.target = "_blank";
-        maps.rel = "noopener noreferrer external";
-        maps.className = "action-btn blue";
-        maps.textContent = "Maps";
-
-        const del = el("button","action-btn red"); del.textContent = "Excluir";
-        del.addEventListener("click", () => {
-          const s = loadState();
-          s.trips[trip.id].days[key].splice(i,1);
-          saveState(s);
-          renderTrips();
-        });
-
-        row.appendChild(check);
+        row.style.display = "block";
+        const text = el("div","activity-text"); 
+        text.textContent = act.activity;
         row.appendChild(text);
-        row.appendChild(cost);
-        right.appendChild(maps);
-        right.appendChild(del);
-        row.appendChild(right);
         listEl.appendChild(row);
       });
     }
@@ -255,7 +360,7 @@ function renderCalendar(trip){
   return grid;
 }
 
-// ==== Modal ====
+// ===== Modal de atividades ====================================================
 function openModalForDay(tripId, key, human){
   activeTripId = tripId;
   activeDayKey = key;
@@ -306,13 +411,16 @@ function renderModalList(){
 
     const right = el("div"); right.style.display = "flex"; right.style.gap = "8px"; right.style.alignItems = "center";
 
-    // === MAPS (estável no iOS) ===
+    // novo botão: abre o mapa EMBUTIDO em um modal
+    const mapInlineBtn = el("button","action-btn blue"); 
+    mapInlineBtn.textContent = "Mapa";
+    mapInlineBtn.addEventListener("click", () => openMapModal(act.activity));
+
+    // já existia: abre o Google Maps em nova aba
     const maps = document.createElement("a");
     maps.href = mapsUrl(act.activity);
-    maps.target = "_blank";
-    maps.rel = "noopener noreferrer external";
-    maps.className = "action-btn blue";
-    maps.textContent = "Maps";
+    maps.target = "_blank"; maps.rel = "noopener noreferrer";
+    maps.className = "action-btn blue"; maps.textContent = "Ver mapa";
 
     const del = el("button","action-btn red"); del.textContent = "Excluir";
     del.addEventListener("click", () => {
@@ -326,7 +434,8 @@ function renderModalList(){
     row.appendChild(check);
     row.appendChild(text);
     row.appendChild(cost);
-    right.appendChild(maps);
+    right.appendChild(mapInlineBtn); // botão novo (mapa embutido)
+    right.appendChild(maps);         // link antigo (nova aba)
     right.appendChild(del);
     row.appendChild(right);
     listEl.appendChild(row);
@@ -350,12 +459,275 @@ function addActivity(ev){
   renderTrips();
 }
 
-// ==== Events ====
+// ===== MAP MODAL (Google Maps embed no próprio app) =====
+
+function ensureMapModal(){
+  let holder = document.getElementById("mapModal");
+
+  // Se já existe no HTML, apenas garanta refs e BIND dos eventos
+  if (holder) {
+    const frame = holder.querySelector("#mapFrame");
+    const openLink = holder.querySelector("#openInMaps") || holder.querySelector("#openMapsExternal");
+
+    // liga handlers só uma vez
+    if (!holder._bound) {
+      const close = () => {
+        holder.classList.remove("show");
+        holder.setAttribute("aria-hidden","true");
+        if (frame) frame.src = "about:blank";
+      };
+
+      holder.querySelectorAll("[data-close]").forEach(btn => {
+        btn.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          close();
+        });
+      });
+
+      holder.querySelector(".modal-backdrop")?.addEventListener("click", () => {
+        // clicar no backdrop fecha
+        const card = holder.querySelector(".modal-card");
+        // se clicou fora do card, fecha
+        close();
+      });
+
+      holder.querySelector(".modal-card")?.addEventListener("click", (e) => e.stopPropagation());
+
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && holder.classList.contains("show")) {
+          e.preventDefault();
+          holder._close ? holder._close() : null;
+        }
+      });
+
+      holder._close = close;
+      holder._bound = true;
+    }
+
+    holder._mapFrame = frame;
+    holder._openLink = openLink;
+    return holder;
+  }
+
+  // Se não existir, cria dinamicamente (fallback)
+  holder = document.createElement("div");
+  holder.id = "mapModal";
+  holder.className = "modal";
+  holder.setAttribute("aria-hidden","true");
+
+  holder.innerHTML = `
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-card" style="width:min(900px,92vw);">
+      <button class="modal-close" title="Fechar" data-close>&times;</button>
+      <h3 style="margin:4px 0 10px">Mapa do local</h3>
+      <div style="border:1px solid rgba(255,255,255,.08); border-radius:12px; overflow:hidden">
+        <iframe id="mapFrame" style="width:100%; height:60vh; border:0" loading="lazy"
+                referrerpolicy="no-referrer-when-downgrade" allowfullscreen></iframe>
+      </div>
+      <div style="display:flex; justify-content:flex-end; margin-top:10px; gap:8px">
+        <a id="openInMaps" class="action-btn blue" target="_blank" rel="noopener noreferrer">Abrir no Maps</a>
+        <button class="action-btn red" data-close>Fechar</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(holder);
+
+  // Reaproveita binding acima
+  return ensureMapModal();
+}
+
+function openMapModal(query){
+  const modal = ensureMapModal();
+
+  const frame = modal._mapFrame || modal.querySelector("#mapFrame");
+  const openA = modal._openLink || modal.querySelector("#openInMaps") || modal.querySelector("#openMapsExternal");
+
+  const enc = encodeURIComponent(query);
+  if (frame) frame.src = `https://www.google.com/maps?q=${enc}&output=embed`;
+  if (openA) {
+    openA.href = `https://www.google.com/maps/search/?api=1&query=${enc}`;
+    openA.target = "_blank";
+    openA.rel = "noopener noreferrer external";
+  }
+
+  modal.classList.add("show");
+  modal.setAttribute("aria-hidden","false");
+}
+
+
+
+
+
+// ====== Conversor / Card de câmbio (gráfico + tooltip) =======================
+let chartSpan = "1M";
+let currentRate = 1;
+
+function niceNum(x,round){ const e=Math.floor(Math.log10(x)); const f=x/Math.pow(10,e);
+  let nf; if(round){ if(f<1.5) nf=1; else if(f<3) nf=2; else if(f<7) nf=5; else nf=10; }
+  else { if(f<=1) nf=1; else if(f<=2) nf=2; else if(f<=5) nf=5; else nf=10; }
+  return nf*Math.pow(10,e);
+}
+function niceTicks(min,max,nt=5){ const range=niceNum(max-min,false); const step=niceNum(range/(nt-1),true); const nmin=Math.floor(min/step)*step; const nmax=Math.ceil(max/step)*step; const t=[]; for(let v=nmin;v<=nmax+1e-9;v+=step)t.push(v); return {ticks:t,niceMin:nmin,niceMax: nmax}; }
+
+let chartState=null; // {series,padL,padR,padT,padB,xFor,yFor,w,h}
+let hoverIndex = -1;
+
+function drawChart(canvas, series){
+  if(!canvas) return;
+  const DPR=window.devicePixelRatio||1;
+  const w=canvas.clientWidth, h=canvas.clientHeight;
+  canvas.width=Math.round(w*DPR); canvas.height=Math.round(h*DPR);
+  const ctx=canvas.getContext("2d"); ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.clearRect(0,0,w,h);
+  const padL=56, padR=10, padT=10, padB=22;
+
+  if(!series || !series.length){ chartState=null; return; }
+
+  const values=series.map(p=>p.value);
+  const min=Math.min(...values), max=Math.max(...values);
+  const {ticks,niceMin,niceMax}=niceTicks(min,max,5);
+  const span=(niceMax-niceMin)||1e-6;
+  const xFor=i => padL + (i*(w-padL-padR))/((series.length-1)||1);
+  const yFor=v => padT + (h-padT-padB) * (1 - (v-niceMin)/span);
+
+  ctx.font="12px Inter, system-ui, sans-serif";
+  ctx.fillStyle="rgba(231,238,251,.65)";
+  ctx.strokeStyle="rgba(255,255,255,.1)";
+  ctx.lineWidth=1;
+  ticks.forEach(t=>{
+    const y=yFor(t);
+    ctx.beginPath(); ctx.moveTo(padL,y); ctx.lineTo(w-padR,y); ctx.stroke();
+    ctx.fillText(new Intl.NumberFormat("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2}).format(t), 6, y+4);
+  });
+
+  const grad=ctx.createLinearGradient(0,padT,0,h-padB);
+  grad.addColorStop(0,"rgba(0,255,150,.30)");
+  grad.addColorStop(1,"rgba(0,255,150,0)");
+  ctx.beginPath(); ctx.moveTo(padL,h-padB);
+  series.forEach((p,i)=> ctx.lineTo(xFor(i), yFor(p.value)));
+  ctx.lineTo(w-padR, h-padB); ctx.closePath();
+  ctx.fillStyle=grad; ctx.fill();
+
+  ctx.beginPath();
+  series.forEach((p,i)=> i? ctx.lineTo(xFor(i), yFor(p.value)) : ctx.moveTo(xFor(i), yFor(p.value)));
+  ctx.strokeStyle="rgba(0,255,150,.9)"; ctx.lineWidth=2; ctx.stroke();
+
+  if(hoverIndex>=0){
+    const p=series[hoverIndex], x=xFor(hoverIndex), y=yFor(p.value);
+    ctx.save(); ctx.setLineDash([5,5]); ctx.strokeStyle="rgba(255,255,255,.45)";
+    ctx.beginPath(); ctx.moveTo(x,padT); ctx.lineTo(x,h-padB); ctx.stroke(); ctx.restore();
+    ctx.beginPath(); ctx.arc(x,y,4,0,Math.PI*2); ctx.fillStyle="var(--bg)"; ctx.fill(); ctx.lineWidth=2; ctx.strokeStyle="rgba(0,255,150,.95)"; ctx.stroke();
+  }
+
+  chartState={series,padL,padR,padT,padB,xFor,yFor,w,h};
+  updateTooltip();
+}
+
+async function updateChart(){
+  const canvas=$("#rateChart"); const from=$("#fxFromSelect")?.value; const to=$("#fxToSelect")?.value;
+  if(!canvas || !from || !to) return;
+  try{
+    const data=await fetchHistory(from,to,chartSpan);
+    drawChart(canvas,data);
+  }catch{/* ignora */}
+}
+
+// Tooltip
+let tooltipEl = null;
+function ensureTooltip(){
+  if (tooltipEl) return tooltipEl;
+  tooltipEl = document.createElement("div");
+  tooltipEl.style.position="absolute";
+  tooltipEl.style.pointerEvents="none";
+  tooltipEl.style.background="rgba(15,17,21,.9)";
+  tooltipEl.style.border="1px solid rgba(255,255,255,.15)";
+  tooltipEl.style.borderRadius="8px";
+  tooltipEl.style.padding="6px 8px";
+  tooltipEl.style.font="12px Inter, system-ui, sans-serif";
+  tooltipEl.style.color="#e7eefb";
+  tooltipEl.style.transform="translate(-50%,-120%)";
+  tooltipEl.style.display="none";
+  $(".chart-wrap")?.appendChild(tooltipEl);
+  return tooltipEl;
+}
+function updateTooltip(){
+  const canvas=$("#rateChart");
+  if(!canvas || !chartState) return;
+  const tip = ensureTooltip();
+  if (hoverIndex<0){ tip.style.display="none"; return; }
+
+  const p = chartState.series[hoverIndex];
+  const x = chartState.xFor(hoverIndex), y = chartState.yFor(p.value);
+  tip.style.left = `${x}px`;
+  tip.style.top  = `${y}px`;
+  const vfmt = new Intl.NumberFormat("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2}).format(p.value);
+  const dfmt = new Date(p.date+"T00:00:00Z").toLocaleDateString("pt-BR",{day:"2-digit",month:"short",weekday:"short"});
+  tip.innerHTML = `<strong>${vfmt}</strong> — ${dfmt}`;
+  tip.style.display="block";
+}
+
+function handleChartHover(e){
+  if(!chartState) return;
+  const rect = e.currentTarget.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  let bestI = -1, bestDx = 1e9;
+  for(let i=0;i<chartState.series.length;i++){
+    const xi = chartState.xFor(i);
+    const dx = Math.abs(x - xi);
+    if (dx < bestDx){ bestDx = dx; bestI = i; }
+  }
+  hoverIndex = bestI;
+  drawChart(e.currentTarget, chartState.series);
+}
+function clearChartHover(){
+  hoverIndex = -1;
+  const canvas=$("#rateChart");
+  if (chartState && canvas) drawChart(canvas, chartState.series);
+}
+
+// ===== Refresh de taxa ========================================================
+let fetchingCtrl=null;
+async function refreshRate(){
+  const from = getSelVal("fxFromSelect","USD");
+  const to   = getSelVal("fxToSelect","BRL");
+
+  const updBtn = $("#updateRate");
+  if (updBtn) updBtn.style.display = "none";
+
+  if(fetchingCtrl) fetchingCtrl.abort();
+  fetchingCtrl=new AbortController();
+  try{
+    const rate=await fetchRate(from,to);
+    currentRate=rate;
+
+    const ex = $("#exchangeRateInput"); if (ex) ex.value = String(rate);
+
+    const headline=$("#fxHeadline");
+    if(headline){
+      const fmt = new Intl.NumberFormat("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2});
+      headline.textContent=`1 ${from} igual a ${fmt.format(rate)} ${to}`;
+    }
+
+    const a=parseFloat($("#fxFromValue")?.value||"");
+    if(!isNaN(a) && $("#fxToValue")) $("#fxToValue").value=(a*rate).toFixed(2);
+
+    const info=$("#rateInfo");
+    if(info) info.textContent=`Atualizado agora — ${new Date().toLocaleTimeString()}`;
+
+    await updateChart();
+  }catch{
+    const info=$("#rateInfo");
+    if(info) info.textContent="Não foi possível obter a cotação agora.";
+  }
+}
+
+// ===== Eventos ===============================================================
 function attachEvents(){
-  // Gerar calendário: se controles colapsados -> expandir. Se visíveis -> criar trip e colapsar novamente.
-  $("#generate").addEventListener("click", () => {
+  // Gerar calendário
+  $("#generate")?.addEventListener("click", () => {
     const controls = document.querySelector(".controls");
-    if (controls.classList.contains("collapsed")){
+    if (controls && controls.classList.contains("collapsed")){
       controls.classList.remove("collapsed");
       const first = controls.querySelector(".field input, .field select");
       if (first) first.focus();
@@ -378,43 +750,72 @@ function attachEvents(){
       name,
       settings:{
         start:s, end:e,
-        tripCurrency: $("#tripCurrency").value,
-        userCurrency: $("#userCurrency").value,
+        tripCurrency: $("#tripCurrency")?.value || "USD",
+        userCurrency: $("#userCurrency")?.value || "BRL",
         rate: Number($("#exchangeRateInput").value || 1),
         budget: Number($("#budget").value || 0)
       },
       days:{},
-      collapsed:true   // cria já colapsado (mostrar só o título)
+      collapsed:false
     };
     state.trips[id] = trip;
-    state.order.unshift(id); // mais recente em cima
+    state.order.unshift(id);
     saveState(state);
     renderTrips();
 
-    // Auto-colapsa controles e limpa os campos de nome/datas para a próxima criação
-    controls.classList.add("collapsed");
+    const controlsEl = document.querySelector(".controls");
+    if (controlsEl) controlsEl.classList.add("collapsed");
     $("#tripName").value = "";
-    // Mantém moedas/orçamento caso o usuário vá criar outro similar
   });
 
-  $("#modalAddBtn").addEventListener("click", addActivity);
-  $("#modal").addEventListener("click", (e) => {
+  $("#modalAddBtn")?.addEventListener("click", addActivity);
+  $("#modal")?.addEventListener("click", (e) => {
     if (e.target.matches("[data-close]") || e.target.classList.contains("modal")) closeModal();
   });
   document.addEventListener("keydown",(e)=>{
-    if (e.key === "Escape" && $("#modal").classList.contains("show")) closeModal();
+    if (e.key === "Escape" && $("#modal")?.classList.contains("show")) closeModal();
   });
 
-  // Enter no modal adiciona
   ["modalActivityInput","modalCostInput"].forEach(id=>{
     const elx = document.getElementById(id);
-    elx.addEventListener("keydown", (ev) => { if (ev.key === "Enter") addActivity(ev); });
+    elx?.addEventListener("keydown", (ev) => { if (ev.key === "Enter") addActivity(ev); });
   });
+
+  // Conversor de câmbio
+  $("#fxFromSelect")?.addEventListener("change", ()=> refreshRate());
+  $("#fxToSelect")?.addEventListener("change", ()=> refreshRate());
+  $("#fxFromValue")?.addEventListener("input", ()=>{
+    const v=parseFloat($("#fxFromValue").value);
+    if(!isNaN(v) && currentRate && $("#fxToValue")) $("#fxToValue").value=(v*currentRate).toFixed(2);
+  });
+  $("#fxToValue")?.addEventListener("input", ()=>{
+    const v=parseFloat($("#fxToValue").value);
+    if(!isNaN(v) && currentRate && $("#fxFromValue")) $("#fxFromValue").value=(v/currentRate).toFixed(2);
+  });
+  $("#fxSwap")?.addEventListener("click", ()=>{
+    const fs=$("#fxFromSelect"), ts=$("#fxToSelect");
+    if(fs && ts){ const tmp=fs.value; fs.value=ts.value; ts.value=tmp; refreshRate(); }
+  });
+
+  document.querySelectorAll(".chart-btn").forEach(b=>{
+    b.addEventListener("click", async ()=>{
+      document.querySelectorAll(".chart-btn").forEach(x=>x.classList.remove("active"));
+      b.classList.add("active");
+      chartSpan=b.dataset.span||"1M";
+      await updateChart();
+    });
+  });
+
+  const canvas = $("#rateChart");
+  canvas?.addEventListener("mousemove", handleChartHover);
+  canvas?.addEventListener("mouseleave", clearChartHover);
 }
 
-// ==== Boot ====
-(function init(){
+// ===== Boot ==================================================================
+(async function init(){
   fillCurrencySelects();
+  await tryEnrichSymbols();
   attachEvents();
   renderTrips();
+  if ($("#fxFromSelect") && $("#fxToSelect")) await refreshRate();
 })();
