@@ -416,7 +416,13 @@ function renderModalList(){
     mapInlineBtn.textContent = "Mapa";
     mapInlineBtn.addEventListener("click", () => openMapModal(act.activity));
 
-    const del = el("button","activity-del"); del.setAttribute("title","Excluir"); del.textContent = "×";
+    // já existia: abre o Google Maps em nova aba
+    const maps = document.createElement("a");
+    maps.href = mapsUrl(act.activity);
+    maps.target = "_blank"; maps.rel = "noopener noreferrer";
+    maps.className = "action-btn blue"; maps.textContent = "Ver mapa";
+
+    const del = el("button","action-btn red"); del.textContent = "Excluir";
     del.addEventListener("click", () => {
       const st = loadState();
       st.trips[activeTripId].days[activeDayKey].splice(i,1);
@@ -428,9 +434,10 @@ function renderModalList(){
     row.appendChild(check);
     row.appendChild(text);
     row.appendChild(cost);
-    right.appendChild(mapInlineBtn);
+    right.appendChild(mapInlineBtn); // botão novo (mapa embutido)
+    right.appendChild(maps);         // link antigo (nova aba)
+    right.appendChild(del);
     row.appendChild(right);
-    row.appendChild(del);
     listEl.appendChild(row);
   });
 }
