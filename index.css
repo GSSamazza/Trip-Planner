@@ -205,3 +205,33 @@ select, option{
 html{ -webkit-text-size-adjust:100% }
 input[type="date"]{ -webkit-appearance:none; appearance:none; background-clip:padding-box; }
 input[type="date"]::-webkit-calendar-picker-indicator{ filter:invert(1) opacity(.8); cursor:pointer; padding:6px; }
+
+
+/* === Fix: selects clicáveis no iOS e mobile === */
+.fx-input { position: relative; }
+.fx-input select{
+  width:100%;
+  position:relative;
+  z-index:2;
+  -webkit-appearance: menulist;
+  appearance: auto;
+  cursor:pointer;
+}
+
+/* === Botão X absoluto nas atividades === */
+.activity{ position: relative; }
+.activity .activity-del{
+  position:absolute;
+  top:8px;
+  right:8px;
+  background:transparent;
+  border:1px solid rgba(255,255,255,.15);
+  border-radius:8px;
+  width:28px; height:28px;
+  line-height:24px;
+  text-align:center;
+  font-weight:800;
+  color:var(--muted);
+  cursor:pointer;
+}
+.activity .activity-del:hover{ border-color:var(--danger); color:#fff; }

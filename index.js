@@ -416,13 +416,7 @@ function renderModalList(){
     mapInlineBtn.textContent = "Mapa";
     mapInlineBtn.addEventListener("click", () => openMapModal(act.activity));
 
-    // já existia: abre o Google Maps em nova aba
-    const maps = document.createElement("a");
-    maps.href = mapsUrl(act.activity);
-    maps.target = "_blank"; maps.rel = "noopener noreferrer";
-    maps.className = "action-btn blue"; maps.textContent = "Ver mapa";
-
-    const del = el("button","action-btn red"); del.textContent = "Excluir";
+    const del = el("button","activity-del"); del.setAttribute("title","Excluir"); del.textContent = "×";
     del.addEventListener("click", () => {
       const st = loadState();
       st.trips[activeTripId].days[activeDayKey].splice(i,1);
@@ -434,10 +428,9 @@ function renderModalList(){
     row.appendChild(check);
     row.appendChild(text);
     row.appendChild(cost);
-    right.appendChild(mapInlineBtn); // botão novo (mapa embutido)
-    right.appendChild(maps);         // link antigo (nova aba)
-    right.appendChild(del);
+    right.appendChild(mapInlineBtn);
     row.appendChild(right);
+    row.appendChild(del);
     listEl.appendChild(row);
   });
 }
@@ -460,57 +453,15 @@ function addActivity(ev){
 }
 
 // ===== MAP MODAL (Google Maps embed no próprio app) =====
-
 function ensureMapModal(){
   let holder = document.getElementById("mapModal");
-
-  // Se já existe no HTML, apenas garanta refs e BIND dos eventos
   if (holder) {
-    const frame = holder.querySelector("#mapFrame");
-    const openLink = holder.querySelector("#openInMaps") || holder.querySelector("#openMapsExternal");
-
-    // liga handlers só uma vez
-    if (!holder._bound) {
-      const close = () => {
-        holder.classList.remove("show");
-        holder.setAttribute("aria-hidden","true");
-        if (frame) frame.src = "about:blank";
-      };
-
-      holder.querySelectorAll("[data-close]").forEach(btn => {
-        btn.addEventListener("click", (ev) => {
-          ev.preventDefault();
-          ev.stopPropagation();
-          close();
-        });
-      });
-
-      holder.querySelector(".modal-backdrop")?.addEventListener("click", () => {
-        // clicar no backdrop fecha
-        const card = holder.querySelector(".modal-card");
-        // se clicou fora do card, fecha
-        close();
-      });
-
-      holder.querySelector(".modal-card")?.addEventListener("click", (e) => e.stopPropagation());
-
-      document.addEventListener("keydown", (e) => {
-        if (e.key === "Escape" && holder.classList.contains("show")) {
-          e.preventDefault();
-          holder._close ? holder._close() : null;
-        }
-      });
-
-      holder._close = close;
-      holder._bound = true;
-    }
-
-    holder._mapFrame = frame;
-    holder._openLink = openLink;
+    // se já existe, garanta que as refs estão disponíveis
+    holder._mapFrame = holder._mapFrame || holder.querySelector("#mapFrame");
+    holder._openLink = holder._openLink || holder.querySelector("#openInMaps");
     return holder;
   }
 
-  // Se não existir, cria dinamicamente (fallback)
   holder = document.createElement("div");
   holder.id = "mapModal";
   holder.className = "modal";
@@ -533,28 +484,52 @@ function ensureMapModal(){
   `;
   document.body.appendChild(holder);
 
-  // Reaproveita binding acima
-  return ensureMapModal();
+  const frame = holder.querySelector("#mapFrame");
+  const openLink = holder.querySelector("#openInMaps");
+
+  const close = () => {
+    holder.classList.remove("show");
+    holder.setAttribute("aria-hidden","true");
+    if (frame) frame.src = "about:blank";
+  };
+
+  // Fecha pelos botões [data-close]
+  holder.querySelectorAll("[data-close]").forEach(btn =>
+    btn.addEventListener("click", (ev)=>{ ev.preventDefault(); ev.stopPropagation(); close(); })
+  );
+
+  // Fecha clicando no backdrop
+  holder.querySelector(".modal-backdrop").addEventListener("click", close);
+
+  // Evita fechar ao clicar dentro do card
+  holder.querySelector(".modal-card").addEventListener("click", e => e.stopPropagation());
+
+  // Fecha com ESC
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && holder.classList.contains("show")) close();
+  });
+
+  // guarda helpers para uso no openMapModal
+  holder._mapFrame = frame;
+  holder._openLink = openLink;
+
+  return holder;
 }
 
 function openMapModal(query){
   const modal = ensureMapModal();
 
+  // revalida refs (por segurança em hot reload)
   const frame = modal._mapFrame || modal.querySelector("#mapFrame");
-  const openA = modal._openLink || modal.querySelector("#openInMaps") || modal.querySelector("#openMapsExternal");
+  const openA = modal._openLink || modal.querySelector("#openInMaps");
 
-  const enc = encodeURIComponent(query);
-  if (frame) frame.src = `https://www.google.com/maps?q=${enc}&output=embed`;
-  if (openA) {
-    openA.href = `https://www.google.com/maps/search/?api=1&query=${enc}`;
-    openA.target = "_blank";
-    openA.rel = "noopener noreferrer external";
-  }
+  const src = `https://www.google.com/maps?q=${encodeURIComponent(query)}&output=embed`;
+  if (frame) frame.src = src;
+  if (openA) openA.href = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
 
   modal.classList.add("show");
   modal.setAttribute("aria-hidden","false");
 }
-
 
 
 
